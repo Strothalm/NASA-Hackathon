@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Code generated with AI assistance (Claude by Anthropic); game rules and values by the team">
+<meta name="description" content="Asteroid risk meter for our Space Apps 2026 mission design game. Code generated with AI assistance.">
+<title>Asteroid Risk Meter</title>
+<style>
+  :root { --bg:#0b1020; --panel:#141b33; --text:#e8ecf8; --muted:#9aa5c7; --ok:#4cc38a; --warn:#f2b84b; --bad:#ff5d6c; --accent:#6ea8ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:640px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.4rem; margin:8px 0 4px; }
+  .sub { color:var(--muted); font-size:.9rem; margin-bottom:16px; }
+  .panel { background:var(--panel); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .levels { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  button { font:inherit; color:var(--text); background:#1f2950; border:2px solid transparent; border-radius:10px; padding:12px 8px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.active { border-color:var(--accent); background:#27346a; }
+  button.primary { background:var(--accent); color:#0b1020; font-weight:700; width:100%; margin-top:12px; }
+  button.leave { background:var(--ok); color:#0b1020; font-weight:700; width:100%; margin-top:12px; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .info { color:var(--muted); font-size:.85rem; margin-top:8px; }
+  #chart { width:100%; height:200px; display:block; background:#0e1530; border-radius:8px; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; text-align:center; margin-top:12px; }
+  .stat b { display:block; font-size:1.4rem; }
+  .stat span { font-size:.75rem; color:var(--muted); }
+  #result { font-size:1.1rem; font-weight:700; text-align:center; margin-top:12px; min-height:1.5em; }
+  .fail { color:var(--bad); } .success { color:var(--ok); }
+  footer { color:var(--muted); font-size:.75rem; text-align:center; padding:8px 0 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Asteroid Risk Meter</h1>
+  <p class="sub" id="scenario"></p>
+
+  <div class="panel">
+    <div class="levels" id="levels"></div>
+    <p class="info" id="levelInfo"></p>
+    <button class="primary" id="start">Start drilling</button>
+  </div>
+
+  <div class="panel">
+    <canvas id="chart" width="600" height="200" aria-label="Risk bar chart"></canvas>
+    <div class="stats">
+      <div class="stat"><b id="risk">0</b><span>Danger (0&ndash;100)</span></div>
+      <div class="stat"><b id="time">0.0 s</b><span>Time on asteroid</span></div>
+      <div class="stat"><b id="data">0</b><span>Data collected</span></div>
+    </div>
+    <button class="leave" id="leave" disabled>Leave asteroid</button>
+    <div id="result"></div>
+  </div>
+</main>
+<footer>
+  Code generated with AI assistance (Claude by Anthropic). Game idea, rules and values by the team.<br>
+  Numbers are placeholders until playtesting.
+</footer>
+
+<script>
+/* ============ CONFIGURATION: the team edits these numbers ============ */
+const CONFIG = {
+  failAt: 90,            // mission fails when danger reaches this value (team decision)
+  tickMs: 500,           // one bar every 0.5 s
+  loseDataOnFail: true,  // placeholder: set false if only part of the data is lost
+  // Per level: drift = average rise per tick, vol = random swing per tick (+/-),
+  // spikeChance/spikeSize = sudden jumps up, relief = chance of a sudden drop.
+  levels: {
+    easy:    { label: "Easy",    drift: 1.1, vol: 2.5, spikeChance: 0.06, spikeSize: 9,  relief: 0.05, dataPerSec: 2,  text: "Slow rise with small swings. You can stay longer, little data." },
+    medium:  { label: "Medium",  drift: 2.2, vol: 4.5, spikeChance: 0.10, spikeSize: 15, relief: 0.05, dataPerSec: 6,  text: "Danger climbs faster and jerks upward. Clearly more data." },
+    extreme: { label: "Extreme", drift: 1.6, vol: 9,   spikeChance: 0.14, spikeSize: 26, relief: 0.12, dataPerSec: 15, text: "Wild jumps up and down, can spike at any moment. Huge data." }
+  },
+  // QR link example: asteroid-risk.html?meteor=2&event=1  (index into the lists below)
+  meteors: [ { name: "Meteor 1", rateFactor: 1.0 }, { name: "Meteor 2", rateFactor: 1.3 }, { name: "Meteor 3", rateFactor: 0.8 } ],
+  events:  [ { name: "No event", rateFactor: 1.0 }, { name: "Event 1", rateFactor: 1.4 }, { name: "Event 2", rateFactor: 0.9 } ]
+};
+/* ===================================================================== */
+
+const q = new URLSearchParams(location.search);
+const meteor = CONFIG.meteors[Math.min(+q.get("meteor") || 0, CONFIG.meteors.length - 1)];
+const event  = CONFIG.events[Math.min(+q.get("event")  || 0, CONFIG.events.length  - 1)];
+const factor = meteor.rateFactor * event.rateFactor;
+document.getElementById("scenario").textContent = meteor.name + " · " + event.name;
+
+let level = "easy", bars = [], risk = 0, t = 0, running = false, timer = null;
+const $ = id => document.getElementById(id);
+
+function buildLevels() {
+  const box = $("levels"); box.innerHTML = "";
+  for (const key of Object.keys(CONFIG.levels)) {
+    const b = document.createElement("button");
+    b.textContent = CONFIG.levels[key].label;
+    b.className = key === level ? "active" : "";
+    b.disabled = running;
+    b.onclick = () => { level = key; buildLevels(); };
+    box.appendChild(b);
+  }
+  $("levelInfo").textContent = CONFIG.levels[level].text;
+}
+
+function draw() {
+  const c = $("chart"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const failY = H - (CONFIG.failAt / 100) * H;
+  g.strokeStyle = "#ff5d6c"; g.setLineDash([6,4]); g.beginPath(); g.moveTo(0, failY); g.lineTo(W, failY); g.stroke(); g.setLineDash([]);
+  g.fillStyle = "#ff5d6c"; g.font = "12px sans-serif"; g.fillText("fail at " + CONFIG.failAt, 6, failY - 4);
+  const maxBars = 40, bw = W / maxBars, shown = bars.slice(-maxBars);
+  shown.forEach((v, i) => {
+    const h = (v / 100) * H;
+    g.fillStyle = v >= CONFIG.failAt ? "#ff5d6c" : v >= 60 ? "#f2b84b" : "#4cc38a";
+    g.fillRect(i * bw + 1, H - h, bw - 2, h);
+  });
+}
+
+function update() {
+  $("risk").textContent = Math.round(risk);
+  $("time").textContent = t.toFixed(1) + " s";
+  $("data").textContent = Math.round(CONFIG.levels[level].dataPerSec * factor * t);
+  draw();
+}
+
+function tick() {
+  const L = CONFIG.levels[level];
+  t += CONFIG.tickMs / 1000;
+  let step = L.drift + (Math.random() * 2 - 1) * L.vol;
+  if (Math.random() < L.spikeChance) step += L.spikeSize * (0.5 + Math.random() * 0.5);
+  if (Math.random() < L.relief) step -= L.spikeSize * Math.random();
+  step *= factor;
+  risk = Math.max(0, Math.min(100, risk + step));
+  bars.push(risk);
+  update();
+  if (risk >= CONFIG.failAt) finish(true);
+}
+
+function finish(failed) {
+  clearInterval(timer); running = false;
+  $("leave").disabled = true; $("start").disabled = false; buildLevels();
+  const data = Math.round(CONFIG.levels[level].dataPerSec * factor * t);
+  const r = $("result");
+  if (failed) {
+    r.className = "fail";
+    r.textContent = "Mission failed. Danger reached " + CONFIG.failAt + (CONFIG.loseDataOnFail ? " – all data lost." : ".");
+    if (CONFIG.loseDataOnFail) $("data").textContent = "0";
+  } else {
+    r.className = "success";
+    r.textContent = "You left in time. Raw material to decode: " + data + " data points.";
+  }
+}
+
+$("start").onclick = () => {
+  bars = []; risk = 0; t = 0; running = true;
+  $("result").textContent = ""; $("start").disabled = true; $("leave").disabled = false; buildLevels(); update();
+  timer = setInterval(tick, CONFIG.tickMs);
+};
+$("leave").onclick = () => { if (running) finish(false); };
+
+buildLevels(); update();
+</script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Code generated with AI assistance (Claude by Anthropic); game rules and values by the team">
+<meta name="description" content="Mission calculator for our Space Apps 2026 mission design game: type in the values from your cards and check mass, cost, power, thrust and data. Code generated with AI assistance.">
+<title>Mission Calculator</title>
+<style>
+  :root { --bg:#0b1020; --panel:#141b33; --text:#e8ecf8; --muted:#9aa5c7; --ok:#4cc38a; --bad:#ff5d6c; --accent:#6ea8ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:820px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.4rem; margin:8px 0 4px; } h2 { font-size:1.05rem; margin:0 0 8px; }
+  .sub { color:var(--muted); font-size:.9rem; margin-bottom:16px; }
+  .panel { background:var(--panel); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin-bottom:8px; }
+  .field { display:flex; flex-direction:column; font-size:.72rem; color:var(--muted); min-width:84px; flex:1; }
+  input { font:inherit; font-size:1rem; background:#1f2950; color:var(--text); border:1px solid #33427d; border-radius:8px; padding:8px; width:100%; }
+  button { font:inherit; color:var(--text); background:#1f2950; border:1px solid #33427d; border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.rm { color:var(--bad); flex:0 0 auto; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:6px 4px; border-bottom:1px solid #222c52; } td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .badge { font-size:.75rem; padding:2px 8px; border-radius:99px; margin-left:8px; }
+  .ok { background:#1d4a39; color:var(--ok); } .bad { background:#5a2430; color:var(--bad); }
+  .mult { font-size:2rem; font-weight:800; }
+  .note { color:var(--muted); font-size:.8rem; }
+  a { color:var(--accent); }
+  footer { color:var(--muted); font-size:.75rem; text-align:center; padding:8px 0 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mission Calculator</h1>
+  <p class="sub">Type in the values from your mission card and your equipment cards. The page does the maths.</p>
+
+  <div class="panel">
+    <h2>Mission limits</h2>
+    <div class="row">
+      <div class="field">Budget (points)<input id="budget" type="number" inputmode="decimal" placeholder="e.g. 500"></div>
+      <div class="field">Maximum mass (kg)<input id="maxMass" type="number" inputmode="decimal" placeholder="e.g. 1200"></div>
+    </div>
+  </div>
+
+  <div id="sections"></div>
+
+  <div class="panel">
+    <h2>Result</h2>
+    <table id="sums"></table>
+    <p style="margin:16px 0 0">Score multiplier <span class="mult" id="mult">1.00</span></p>
+    <p class="note" id="multNote"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Formulas used</h2>
+    <p class="note">
+      Total mass = all part masses + fuel. Thrust-to-weight ratio = thrust / (total mass &times; g0), g0 = 9.80665 m/s&sup2;.<br>
+      Delta-v = Isp &times; g0 &times; ln(start mass / end mass) (ideal rocket equation),
+      see <a href="https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/ideal-rocket-equation/" target="_blank" rel="noopener">NASA Glenn Research Center: Ideal Rocket Equation</a>.<br>
+      Effective data = data &times; (1 &minus; loss in %).
+    </p>
+  </div>
+</main>
+<footer>
+  Code generated with AI assistance (Claude by Anthropic). Game idea, rules and values by the team.
+</footer>
+
+<script>
+/* ============ CONFIGURATION: the team edits this ============ */
+const G0 = 9.80665;
+const CONFIG = {
+  multiplier: { perItem: 0.03, max: 1.3 },   // placeholder: +0.03 per entered part, capped at 1.3
+  minThrustToWeight: 1.2,                    // placeholder: below this the rocket does not lift off
+  // Sections and the fields the player types in for each part. Fields marked sum:true are added up.
+  sections: [
+    { id: "stage", title: "Stage / booster", fields: [
+      { key: "mass", label: "Mass (kg)", sum: true }, { key: "cost", label: "Cost (pts)", sum: true },
+      { key: "thrust", label: "Thrust (kN)", sum: true }, { key: "fuel", label: "Fuel mass (kg)", sum: true }, { key: "isp", label: "Isp (s)" } ] },
+    { id: "antenna", title: "Antenna", fields: [
+      { key: "mass", label: "Mass (kg)", sum: true }, { key: "cost", label: "Cost (pts)", sum: true },
+      { key: "power", label: "Power (W, − uses)", sum: true }, { key: "data", label: "Data per send" }, { key: "loss", label: "Loss (%)" } ] },
+    { id: "battery", title: "Battery", fields: [
+      { key: "mass", label: "Mass (kg)", sum: true }, { key: "cost", label: "Cost (pts)", sum: true },
+      { key: "power", label: "Power (W, + gives)", sum: true } ] },
+    { id: "other", title: "Other equipment", fields: [
+      { key: "mass", label: "Mass (kg)", sum: true }, { key: "cost", label: "Cost (pts)", sum: true },
+      { key: "power", label: "Power (W)", sum: true } ] }
+  ]
+};
+/* ============================================================ */
+
+const $ = id => document.getElementById(id);
+const num = v => { const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+const rows = {};   // section id -> array of row elements
+
+function addRow(sec) {
+  const wrap = document.createElement("div"); wrap.className = "row";
+  let html = `<div class="field">Name (optional)<input data-k="name" type="text"></div>`;
+  sec.fields.forEach(f => html += `<div class="field">${f.label}<input data-k="${f.key}" type="number" inputmode="decimal" step="any"></div>`);
+  html += `<button class="rm" type="button" title="Remove">&times;</button>`;
+  wrap.innerHTML = html;
+  wrap.querySelectorAll("input").forEach(i => i.oninput = render);
+  wrap.querySelector(".rm").onclick = () => { wrap.remove(); rows[sec.id] = rows[sec.id].filter(r => r !== wrap); render(); };
+  $("list-" + sec.id).appendChild(wrap); rows[sec.id].push(wrap); render();
+}
+
+CONFIG.sections.forEach(sec => {
+  rows[sec.id] = [];
+  const p = document.createElement("div"); p.className = "panel";
+  p.innerHTML = `<h2>${sec.title}</h2><div id="list-${sec.id}"></div><button type="button" id="add-${sec.id}">+ Add ${sec.title.toLowerCase()}</button>`;
+  $("sections").appendChild(p);
+  $("add-" + sec.id).onclick = () => addRow(sec);
+});
+$("budget").oninput = render; $("maxMass").oninput = render;
+
+const val = (r, k) => num(r.querySelector(`[data-k="${k}"]`).value);
+const badge = (ok, text) => `<span class="badge ${ok ? "ok" : "bad"}">${text}</span>`;
+
+function render() {
+  const sums = { mass: 0, cost: 0, power: 0, thrust: 0, fuel: 0 };
+  let count = 0, effData = 0, rawData = 0, ispOfStage = 0, stageThrustMass = 0;
+  CONFIG.sections.forEach(sec => rows[sec.id].forEach(r => {
+    const used = sec.fields.some(f => val(r, f.key) !== 0);
+    if (used) count++;
+    sec.fields.forEach(f => { if (f.sum) sums[f.key] = (sums[f.key] || 0) + val(r, f.key); });
+    if (sec.id === "antenna") { const d = val(r, "data"), l = val(r, "loss"); rawData += d; effData += d * (1 - l / 100); }
+    if (sec.id === "stage" && val(r, "fuel") > 0) { ispOfStage += val(r, "isp") * val(r, "fuel"); stageThrustMass += val(r, "fuel"); }
+  }));
+  const mass = sums.mass + sums.fuel;
+  const isp = stageThrustMass > 0 ? ispOfStage / stageThrustMass : 0;   // fuel-weighted average Isp
+  const twr = mass > 0 ? (sums.thrust * 1000) / (mass * G0) : 0;
+  const dv = isp > 0 && mass - sums.fuel > 0 ? isp * G0 * Math.log(mass / (mass - sums.fuel)) : 0;
+  const budget = num($("budget").value), maxMass = num($("maxMass").value);
+  const mult = Math.min(CONFIG.multiplier.max, 1 + CONFIG.multiplier.perItem * count);
+
+  $("sums").innerHTML = `
+    <tr><td>Total mass (with fuel)</td><td>${mass.toFixed(1)} kg ${maxMass ? badge(mass <= maxMass, mass <= maxMass ? "within limit" : "too heavy") : ""}</td></tr>
+    <tr><td>Cost</td><td>${sums.cost.toFixed(1)} pts ${budget ? badge(sums.cost <= budget, sums.cost <= budget ? "within budget" : "over budget") : ""}</td></tr>
+    <tr><td>Power balance</td><td>${sums.power >= 0 ? "+" : ""}${sums.power.toFixed(1)} W ${badge(sums.power >= 0, sums.power >= 0 ? "ok" : "not enough power")}</td></tr>
+    <tr><td>Thrust</td><td>${sums.thrust.toFixed(1)} kN</td></tr>
+    <tr><td>Thrust-to-weight ratio</td><td>${twr.toFixed(2)} ${sums.thrust > 0 ? badge(twr >= CONFIG.minThrustToWeight, twr >= CONFIG.minThrustToWeight ? "lifts off" : "too weak to lift off") : ""}</td></tr>
+    <tr><td>Delta-v</td><td>${dv.toFixed(0)} m/s</td></tr>
+    <tr><td>Data per send (effective / raw)</td><td>${effData.toFixed(1)} / ${rawData.toFixed(1)}</td></tr>`;
+  $("mult").textContent = mult.toFixed(2);
+  $("multNote").textContent = `${count} part(s) entered. Every part adds ${CONFIG.multiplier.perItem}, capped at ${CONFIG.multiplier.max}, but also adds mass and cost.`;
+}
+CONFIG.sections.forEach(sec => addRow(sec));
+render();
+</script>
+</body>
+</html>
